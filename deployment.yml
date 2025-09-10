@@ -16,6 +16,6 @@ spec:
     spec:
       containers:
       - name: reddit-clone
-        image: rohanrustagi18/redditclone
+        image: docker.io/sandeep9vangala/reddit-clone-app:v1
         ports:
         - containerPort: 3000
