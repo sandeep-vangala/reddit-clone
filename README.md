@@ -362,6 +362,151 @@ To avoid costs:
 - Uninstall Helm releases: `helm uninstall stable -n prometheus`.  
 - Delete EKS cluster: `eksctl delete cluster --name my-eks-cluster --region us-west-2`.  
 - Delete ECR repo: `aws ecr delete-repository --repository-name reddit-clone-app --region us-west-2 --force`.
+- 
+
+
+To enhance the `Ingress` resource for the Reddit clone app on an Amazon EKS cluster with NGINX Ingress Controller, you can add annotations to configure advanced behaviors such as SSL/TLS termination, AWS Load Balancer settings, rate limiting, or session affinity. Since you're deploying on EKS, we'll focus on annotations relevant to the AWS Load Balancer (used by NGINX Ingress) and common NGINX configurations. Below, I'll explain how to set up annotations for your provided `ingress.yaml` file, tailored for the Reddit clone app, ensuring compatibility with the NGINX Ingress Controller and AWS-specific features.
+
+### Understanding Annotations
+Annotations in the `Ingress` resource are key-value pairs in the `metadata.annotations` section that provide additional configuration to the Ingress controller. For NGINX Ingress on EKS, annotations can control:
+- **AWS Load Balancer settings**: Type (Classic/NLB/ALB), SSL certificates, health checks.
+- **NGINX-specific settings**: URL rewrites, timeouts, rate limiting.
+- **Security**: TLS/SSL configuration.
+
+### Updated `ingress.yaml` with Annotations
+Here’s the modified `ingress.yaml` with annotations for EKS and NGINX Ingress, including explanations for each annotation. The service port is adjusted to 5000 (based on the Reddit clone project, which uses port 5000, not 3000 as in your provided file). Replace `domain.com` with your actual domain or leave it as `*` for testing with the Load Balancer’s hostname.
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingress-reddit-app
+  namespace: default  # Ensure this matches your deployment namespace
+  annotations:
+    # NGINX Ingress Controller class (required to specify NGINX)
+    kubernetes.io/ingress.class: "nginx"
+    # AWS Load Balancer annotations
+    service.beta.kubernetes.io/aws-load-balancer-type: "external"
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"  # For NLB, use 'ip' for pod-level routing
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+    # SSL/TLS with AWS Certificate Manager (ACM) - replace with your certificate ARN
+    service.beta.kubernetes.io/aws-load-balancer-ssl-cert: "arn:aws:acm:us-west-2:123456789012:certificate/xxxx-xxxx-xxxx-xxxx-xxxx"
+    service.beta.kubernetes.io/aws-load-balancer-ssl-ports: "443"
+    # NGINX-specific configurations
+    nginx.ingress.kubernetes.io/rewrite-target: /  # Rewrite /test to root if needed
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"  # Force HTTPS
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "30"  # Connection timeout in seconds
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "30"  # Read timeout in seconds
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "30"  # Send timeout in seconds
+    nginx.ingress.kubernetes.io/limit-rps: "10"  # Rate limit to 10 requests per second
+    nginx.ingress.kubernetes.io/affinity: "cookie"  # Session affinity using cookies
+    nginx.ingress.kubernetes.io/affinity-mode: "persistent"  # Persistent session stickiness
+    nginx.ingress.kubernetes.io/session-cookie-name: "REDDITCLONESESSION"  # Custom cookie name
+spec:
+  ingressClassName: nginx  # Explicitly set NGINX Ingress class
+  tls:  # Enable TLS for secure connections
+  - hosts:
+    - domain.com
+    - "*.domain.com"
+    secretName: reddit-clone-tls  # Kubernetes Secret for TLS (optional if using ACM)
+  rules:
+  - host: "domain.com"
+    http:
+      paths:
+      - pathType: Prefix
+        path: "/test"
+        backend:
+          service:
+            name: reddit-clone-service
+            port:
+              number: 5000  # Reddit clone app uses port 5000 per repo
+  - host: "*.domain.com"
+    http:
+      paths:
+      - pathType: Prefix
+        path: "/test"
+        backend:
+          service:
+            name: reddit-clone-service
+            port:
+              number: 5000
+```
+
+### Explanation of Annotations
+1. **Ingress Controller Specification**:
+   - `kubernetes.io/ingress.class: "nginx"`: Specifies that this Ingress uses the NGINX Ingress Controller. This is required for older Kubernetes versions or if multiple Ingress controllers are present. For Kubernetes 1.18+, `ingressClassName: nginx` in the spec is preferred (included above).
+   
+2. **AWS Load Balancer Annotations**:
+   - `service.beta.kubernetes.io/aws-load-balancer-type: "external"`: Indicates that the NGINX Ingress Controller should use an AWS-managed Load Balancer (Classic, NLB, or ALB).
+   - `service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"`: For Network Load Balancer (NLB), routes traffic directly to pod IPs, which is efficient for EKS. Use `"instance"` for Classic ELB if preferred.
+   - `service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"`: Makes the Load Balancer accessible over the internet (use `"internal"` for private access).
+   - `service.beta.kubernetes.io/aws-load-balancer-ssl-cert`: Specifies the ARN of an SSL certificate from AWS Certificate Manager (ACM) for HTTPS. Replace with your certificate’s ARN (get from AWS Console > ACM).
+   - `service.beta.kubernetes.io/aws-load-balancer-ssl-ports: "443"`: Enables SSL on port 443 for HTTPS traffic.
+
+3. **NGINX-Specific Annotations**:
+   - `nginx.ingress.kubernetes.io/rewrite-target: /`: Rewrites `/test` to the root (`/`) of the backend service, useful if the app expects requests at `/`. Adjust based on app behavior.
+   - `nginx.ingress.kubernetes.io/ssl-redirect: "true"`: Redirects HTTP requests to HTTPS.
+   - `nginx.ingress.kubernetes.io/proxy-connect-timeout`, `proxy-read-timeout`, `proxy-send-timeout`: Set timeouts to 30 seconds to handle slow connections (adjust as needed).
+   - `nginx.ingress.kubernetes.io/limit-rps: "10"`: Limits requests to 10 per second per IP to prevent abuse (adjust for your traffic).
+   - `nginx.ingress.kubernetes.io/affinity: "cookie"`, `affinity-mode: "persistent"`, `session-cookie-name: "REDDITCLONESESSION"`: Enables sticky sessions using cookies, ensuring users stay on the same pod for consistent experience (useful for stateful features).
+
+4. **TLS Configuration**:
+   - The `tls` section specifies hosts (`domain.com`, `*.domain.com`) and a Kubernetes Secret (`reddit-clone-tls`) for storing TLS certificates. If using ACM, the secret is optional since the Load Balancer handles SSL termination. If not using ACM, create a Secret with `kubectl create secret tls reddit-clone-tls --cert=path/to/cert.pem --key=path/to/key.pem`.
+
+### Prerequisites for Annotations
+- **NGINX Ingress Controller**: Must be installed in your EKS cluster. Follow the installation steps from the Reddit clone deployment guide:
+  ```
+  helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+  helm repo update
+  kubectl create namespace ingress-nginx
+  helm install ingress-nginx ingress-nginx/ingress-nginx \
+    --namespace ingress-nginx \
+    --set controller.service.annotations."service\.beta\.kubernetes\.io/aws-load-balancer-type"="nlb"
+  ```
+- **AWS Certificate Manager (ACM)**: If using HTTPS, create or import a certificate in ACM for `domain.com` and `*.domain.com`. Copy the ARN for the `aws-load-balancer-ssl-cert` annotation.
+- **DNS Setup**: If using a custom domain (`domain.com`), update your DNS provider to point to the NGINX Ingress Load Balancer’s EXTERNAL-IP (find via `kubectl get svc -n ingress-nginx ingress-nginx-controller`). For testing, use the Load Balancer’s hostname directly.
+
+### Applying the Ingress
+1. Save the updated `ingress.yaml` in your project directory (`reddit-clone/ingress.yaml`).
+2. Apply it to your EKS cluster:  
+   ```
+   kubectl apply -f ingress.yaml
+   ```
+3. Verify the Ingress:  
+   ```
+   kubectl get ingress ingress-reddit-app
+   kubectl describe ingress ingress-reddit-app
+   ```
+   Check the `Address` field for the Load Balancer hostname.
+
+4. Get the Load Balancer URL:  
+   ```
+   kubectl get svc -n ingress-nginx ingress-nginx-controller
+   ```
+   Note the EXTERNAL-IP (e.g., `a123.elb.us-west-2.amazonaws.com`).
+
+### Testing the Ingress
+Test the app using the Load Balancer URL or your domain:  
+```
+curl https://domain.com/test
+curl https://a123.elb.us-west-2.amazonaws.com/test
+```  
+- Ensure the Reddit clone service (`reddit-clone-service`) is running on port 5000 (verify with `kubectl get svc reddit-clone-service`).  
+- If the app doesn’t respond, check pod logs (`kubectl logs <pod-name>`) or Ingress events (`kubectl describe ingress ingress-reddit-app`).
+
+### Troubleshooting
+- **Ingress not routing**: Verify `ingressClassName: nginx` and NGINX controller is running (`kubectl get pods -n ingress-nginx`).  
+- **SSL errors**: Ensure the ACM certificate ARN is correct and covers `domain.com` and `*.domain.com`.  
+- **Service not found**: Confirm `reddit-clone-service` exists and matches the port (5000).  
+- **Rate limiting issues**: Adjust `limit-rps` if too restrictive.  
+- **Load Balancer not provisioned**: Check AWS Console > EC2 > Load Balancers and ensure the NGINX controller pod is healthy.
+
+### Additional Notes
+- **Port Correction**: The original Reddit clone project uses port 5000 (per `service.yaml` and app code), not 3000 as in your `ingress.yaml`. Ensure consistency across `service.yaml` and `ingress.yaml`.  
+- **Production Considerations**: Use an Application Load Balancer (ALB) with AWS Load Balancer Controller for more advanced routing (replace NGINX if needed). Add `cert-manager` for automatic TLS certificate management.  
+- **Cost Management**: Monitor EKS nodes and Load Balancer costs. Delete resources with `kubectl delete -f ingress.yaml` and `eksctl delete cluster --name my-eks-cluster` when done.
+
+This setup integrates the Reddit clone app with EKS-specific features while maintaining the original project’s structure. If you need further customization (e.g., ALB, custom rewrite rules, or specific NGINX settings), provide details, and I can refine the configuration!
 
 
 
